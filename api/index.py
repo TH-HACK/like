@@ -1,11 +1,11 @@
-قfrom flask import Flask, request, jsonify
+from flask import Flask, request, jsonify
 import aiohttp
 import asyncio
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import data_pb2
 import json
-import logging #اا
+import logging
 
 app = Flask(__name__)
 
@@ -13,8 +13,8 @@ app = Flask(__name__)
 KEY = bytes([89, 103, 38, 116, 99, 37, 68, 69, 117, 104, 54, 37, 90, 99, 94, 56])
 IV = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 77, 37])
 URL = "https://clientbp.ggblueshark.com/LikeProfile"
-ACCOUNTS_FILE = "acc.txt"
-JWT_FILE = "jwt.txt"
+ACCOUNTS_FILE = "../acc.txt"  # المسار إلى ملف الحسابات
+JWT_FILE = "../jwt.txt"       # المسار إلى ملف JWT Tokens
 
 # Set up logging
 logging.basicConfig(
@@ -111,5 +111,4 @@ async def process():
     })
 
 if __name__ == '__main__':
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    app.run()
