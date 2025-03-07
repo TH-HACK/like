@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-import data_pb2  # ملف data_pb2.py الذي تم إنشاؤه بواسطة protoc
+import data_pb2  # ملف dat_pb2.py الذي تم إنشاؤه بواسطة protoc
 import json
 import asyncio
 import aiohttp
