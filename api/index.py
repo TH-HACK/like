@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+قfrom flask import Flask, request, jsonify
 import aiohttp
 import asyncio
 from Crypto.Cipher import AES
@@ -111,4 +111,5 @@ async def process():
     })
 
 if __name__ == '__main__':
-    app.run()
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
