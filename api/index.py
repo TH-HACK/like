@@ -1,61 +1,51 @@
 from flask import Flask, request, jsonify
+import aiohttp
+import asyncio
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
-import data_pb2  # ملف dat_pb2.py الذي تم إنشاؤه بواسطة protoc
+import data_pb2
 import json
-import asyncio
-import aiohttp
 import logging
-
-# إعداد logging لعرض التحديثات
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler()  # عرض الرسائل في الـ console
-    ]
-)
 
 app = Flask(__name__)
 
-# دالة لقراءة الحسابات من ملف acc.txt
-def read_accounts(file_path):
-    with open(file_path, "r") as file:
-        content = file.read()
-        accounts = json.loads(content)
-    return accounts
+# Configuration constants
+KEY = bytes([89, 103, 38, 116, 99, 37, 68, 69, 117, 104, 54, 37, 90, 99, 94, 56])
+IV = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 77, 37])
+URL = "https://clientbp.ggblueshark.com/LikeProfile"
+ACCOUNTS_FILE = "acc.txt"
+JWT_FILE = "jwt.txt"
 
-# دالة لتشفير البيانات باستخدام AES
-def encrypt_data(data, key, iv):
-    cipher = AES.new(key, AES.MODE_CBC, iv)
-    padded_data = pad(data, AES.block_size)
-    encrypted_data = cipher.encrypt(padded_data)
-    return encrypted_data.hex()
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler()]
+)
 
-# دالة لجلب JWT Token من الـ API بشكل غير متزامن
+def read_accounts():
+    with open(ACCOUNTS_FILE, "r") as f:
+        return json.load(f)
+
+def encrypt_data(data):
+    cipher = AES.new(KEY, AES.MODE_CBC, IV)
+    return cipher.encrypt(pad(data, AES.block_size)).hex()
+
 async def get_jwt_token(session, uid, password):
     url = f"https://l7aj-jwt-1.vercel.app/get?uid={uid}&password={password}"
     try:
         async with session.get(url, timeout=3) as response:
             if response.status == 200:
-                token = await response.json()
-                logging.info(f"تم جلب JWT Token بنجاح للحساب {uid}.")
-                return uid, token.get("token")
-            else:
-                logging.warning(f"فشل في جلب JWT Token للحساب {uid}. حالة الاستجابة: {response.status}")
-                return uid, None
-    except asyncio.TimeoutError:
-        logging.warning(f"انتهت مهلة الطلب لجلب JWT Token للحساب {uid}.")
-        return uid, None
+                return uid, (await response.json()).get("token")
+            logging.warning(f"JWT fetch failed for {uid}: {response.status}")
     except Exception as e:
-        logging.error(f"حدث خطأ أثناء جلب JWT Token للحساب {uid}: {e}")
-        return uid, None
+        logging.error(f"Error fetching JWT for {uid}: {str(e)}")
+    return uid, None
 
-# دالة لإرسال الطلب إلى السيرفر بشكل غير متزامن
-async def send_request(session, url, encrypted_data, jwt_token):
+async def send_request(session, encrypted_data, token):
     headers = {
         "Expect": "100-continue",
-        "Authorization": f"Bearer {jwt_token}",
+        "Authorization": f"Bearer {token}",
         "X-Unity-Version": "2018.4.11f1",
         "X-GA": "v1 1",
         "ReleaseVersion": "OB48",
@@ -65,69 +55,60 @@ async def send_request(session, url, encrypted_data, jwt_token):
         "Connection": "Keep-Alive",
         "Accept-Encoding": "gzip"
     }
+    
     try:
-        async with session.post(url, headers=headers, data=bytes.fromhex(encrypted_data)) as response:
-            logging.info(f"تم إرسال الطلب بنجاح باستخدام JWT Token.")
-            return response
+        async with session.post(
+            URL,
+            headers=headers,
+            data=bytes.fromhex(encrypted_data)
+        ) as response:
+            return await response.text()
     except Exception as e:
-        logging.error(f"حدث خطأ أثناء إرسال الطلب: {e}")
+        logging.error(f"Request failed: {str(e)}")
         return None
 
-# الدالة الرئيسية لتنفيذ العملية
+def save_tokens(tokens):
+    with open(JWT_FILE, "w") as f:
+        json.dump(tokens, f)
+    logging.info(f"Saved {len(tokens)} tokens to {JWT_FILE}")
+
 @app.route('/process', methods=['GET'])
 async def process():
-    # قراءة الحسابات من ملف acc.txt
-    accounts = read_accounts("acc.txt")
-    logging.info(f"تم تحميل {len(accounts)} حسابًا من ملف acc.txt.")
-    
-    # Key and IV للتشفير
-    key = bytes([89, 103, 38, 116, 99, 37, 68, 69, 117, 104, 54, 37, 90, 99, 94, 56])
-    iv = bytes([54, 111, 121, 90, 68, 114, 50, 50, 69, 51, 121, 99, 104, 106, 77, 37])
-    
-    # عنوان السيرفر
-    url = "https://clientbp.ggblueshark.com/LikeProfile"
-    
-    # طلب إدخال ID و Code من المستخدم عبر query parameters
-    request_id = int(request.args.get('id'))
-    request_code = request.args.get('code')
-    
-    # إنشاء كائن RequestData
-    request_data = data_pb2.RequestData()
-    request_data.id = request_id  # تعيين الـ ID
-    request_data.code = request_code  # تعيين الـ Code
-    
-    # تسلسل الكائن إلى بايتات
-    data_bytes = request_data.SerializeToString()
-    
-    # تشفير البيانات
-    encrypted_data = encrypt_data(data_bytes, key, iv)
-    logging.info("تم تشفير البيانات بنجاح.")
-    
-    # جلب جميع JWT Tokens بشكل غير متزامن
-    jwt_tokens = {}
+    # Get parameters
+    req_id = request.args.get('id', type=int)
+    req_code = request.args.get('code', type=str)
+    if not req_id or not req_code:
+        return jsonify({"error": "Missing required parameters"}), 400
+
+    # Prepare request data
+    req_data = data_pb2.RequestData()
+    req_data.id = req_id
+    req_data.code = req_code
+    encrypted = encrypt_data(req_data.SerializeToString())
+
+    # Get accounts
+    accounts = read_accounts()
+    logging.info(f"Loaded {len(accounts)} accounts")
+
+    # Fetch JWT tokens
     async with aiohttp.ClientSession() as session:
-        tasks = [get_jwt_token(session, uid, password) for uid, password in accounts.items()]
-        results = await asyncio.gather(*tasks)
-        for uid, token in results:
-            if token:
-                jwt_tokens[uid] = token
+        jwt_tasks = [get_jwt_token(session, uid, pwd) for uid, pwd in accounts.items()]
+        results = await asyncio.gather(*jwt_tasks)
     
-    # إرسال الطلبات بشكل غير متزامن
-    responses = []
+    tokens = {uid: token for uid, token in results if token}
+    save_tokens(tokens)
+    
+    # Send requests
     async with aiohttp.ClientSession() as session:
-        tasks = [send_request(session, url, encrypted_data, jwt_token) for jwt_token in jwt_tokens.values()]
-        results = await asyncio.gather(*tasks)
-        for result in results:
-            if result:
-                responses.append({
-                    "status_code": result.status,
-                    "response_text": await result.text()
-                })
-            else:
-                responses.append({"error": "Failed to send request"})
+        send_tasks = [send_request(session, encrypted, token) for token in tokens.values()]
+        await asyncio.gather(*send_tasks)
     
-    return jsonify(responses)
+    return jsonify({
+        "status": "completed",
+        "total_accounts": len(accounts),
+        "successful_tokens": len(tokens),
+        "encrypted_data": encrypted
+    })
 
 if __name__ == '__main__':
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    app.run()
