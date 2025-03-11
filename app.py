@@ -110,7 +110,7 @@ async def send_likes_async(request_id, request_code):
     
     # التحقق من النتائج
     if success_count == len(jwt_tokens):
-        return {"status": "success", "message": "BY ╭ᶫ⁷╯Ｌ７ＡＪ ¹‎ ‎ ‎ ‎ ‎ ‎ TIKTOK : @l7aj..am تم إرسال 100 لايك"}
+        return {"status": "success", "message": "BY  ╭ᶫ⁷╯ L 7 A J ¹‎ ‎ ‎ ‎ ‎ TIKTOK : @l7aj..1m تم إرسال 100 لايك"}
     else:
         return {"status": "error", "message": "تحقق من ID والمنطقة"}
 
