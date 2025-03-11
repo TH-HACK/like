@@ -1,4 +1,5 @@
-"flask[async]"
+Flask[async]==3.0.2
+aiohttp==3.9.1
 requests==2.31.0
 pycryptodome==3.18.0
 protobuf==4.25.1
