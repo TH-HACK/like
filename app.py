@@ -1,59 +1,54 @@
 from flask import Flask, request, jsonify
-import requests
+import aiohttp
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
 import data_pb2  # ملف data_pb2.py الذي تم إنشاؤه بواسطة protoc
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging
 import asyncio
+import logging
 
 # إعداد logging لعرض التحديثات
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.StreamHandler()  # عرض الرسائل في الـ console
-    ]
+    handlers=[logging.StreamHandler()]
 )
 
-# إعداد Flask مع دعم Async
+# إعداد Flask app مع دعم async
 app = Flask(__name__)
 
-# قراءة الحسابات من ملف acc.txt
-def read_accounts(file_path):
-    with open(file_path, "r") as file:
-        content = file.read()
-        accounts = json.loads(content)
-    return accounts
+# قراءة الحسابات من ملف acc.txt بشكل غير متزامن
+async def read_accounts_async(file_path):
+    loop = asyncio.get_event_loop()
+    content = await loop.run_in_executor(None, lambda: open(file_path, "r").read())
+    return json.loads(content)
 
-# دالة لتشفير البيانات باستخدام AES
+# تشفير البيانات باستخدام AES
 def encrypt_data(data, key, iv):
     cipher = AES.new(key, AES.MODE_CBC, iv)
     padded_data = pad(data, AES.block_size)
     encrypted_data = cipher.encrypt(padded_data)
     return encrypted_data.hex()
 
-# دالة لجلب JWT Token من الـ API
-def get_jwt_token(uid, password):
+# جلب JWT Token من الـ API بشكل غير متزامن باستخدام aiohttp
+async def get_jwt_token_async(uid, password):
     url = f"https://l7aj-jwt-1.vercel.app/get?uid={uid}&password={password}"
     try:
-        response = requests.get(url, timeout=3)
-        if response.status_code == 200:
-            logging.info(f"تم جلب JWT Token بنجاح للحساب {uid}.")
-            return uid, response.json().get("token")
-        else:
-            logging.warning(f"فشل في جلب JWT Token للحساب {uid}. حالة الاستجابة: {response.status_code}")
-            return uid, None
-    except requests.Timeout:
-        logging.warning(f"انتهت مهلة الطلب لجلب JWT Token للحساب {uid}.")
-        return uid, None
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=3) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    logging.info(f"تم جلب JWT Token بنجاح للحساب {uid}.")
+                    return uid, data.get("token")
+                else:
+                    logging.warning(f"فشل في جلب JWT Token للحساب {uid}. حالة الاستجابة: {response.status}")
+                    return uid, None
     except Exception as e:
         logging.error(f"حدث خطأ أثناء جلب JWT Token للحساب {uid}: {e}")
         return uid, None
 
-# دالة لإرسال الطلب إلى السيرفر
-def send_request(url, encrypted_data, jwt_token):
+# إرسال الطلب إلى السيرفر بشكل غير متزامن باستخدام aiohttp
+async def send_request_async(url, encrypted_data, jwt_token):
     headers = {
         "Expect": "100-continue",
         "Authorization": f"Bearer {jwt_token}",
@@ -67,19 +62,18 @@ def send_request(url, encrypted_data, jwt_token):
         "Accept-Encoding": "gzip"
     }
     try:
-        response = requests.post(url, headers=headers, data=bytes.fromhex(encrypted_data))
-        logging.info(f"تم إرسال الطلب بنجاح باستخدام JWT Token.")
-        return response
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, headers=headers, data=bytes.fromhex(encrypted_data)) as response:
+                logging.info(f"تم إرسال الطلب بنجاح باستخدام JWT Token.")
+                return response
     except Exception as e:
         logging.error(f"حدث خطأ أثناء إرسال الطلب: {e}")
         return None
 
-# الدالة الرئيسية لإرسال اللايكات
-async def send_likes(request_id, request_code):
-    loop = asyncio.get_event_loop()
-    
+# الدالة الرئيسية لإرسال اللايكات بشكل غير متزامن
+async def send_likes_async(request_id, request_code):
     # قراءة الحسابات من ملف acc.txt
-    accounts = await loop.run_in_executor(None, lambda: read_accounts("acc.txt"))
+    accounts = await read_accounts_async("acc.txt")
     logging.info(f"تم تحميل {len(accounts)} حسابًا من ملف acc.txt.")
     
     # Key and IV للتشفير
@@ -102,28 +96,17 @@ async def send_likes(request_id, request_code):
     logging.info("تم تشفير البيانات بنجاح.")
     
     # جلب جميع JWT Tokens بشكل غير متزامن
-    jwt_tokens = {}
-    with ThreadPoolExecutor(max_workers=100) as executor:
-        futures = {
-            loop.run_in_executor(executor, get_jwt_token, uid, password): uid
-            for uid, password in accounts.items()
-        }
-        for future in as_completed(futures):
-            uid, jwt_token = await future
-            if jwt_token:
-                jwt_tokens[uid] = jwt_token
+    tasks = [get_jwt_token_async(uid, password) for uid, password in accounts.items()]
+    results = await asyncio.gather(*tasks)
+    jwt_tokens = {uid: token for uid, token in results if token}
     
-    # إرسال 100 طلب في نفس الوقت باستخدام JWT Tokens
+    # إرسال الطلبات بشكل غير متزامن
     success_count = 0
-    with ThreadPoolExecutor(max_workers=100) as executor:
-        futures = {
-            loop.run_in_executor(executor, send_request, url, encrypted_data, jwt_token): uid
-            for uid, jwt_token in jwt_tokens.items()
-        }
-        for future in as_completed(futures):
-            response = await future
-            if response and response.status_code == 200:
-                success_count += 1
+    tasks = [send_request_async(url, encrypted_data, jwt_token) for jwt_token in jwt_tokens.values()]
+    responses = await asyncio.gather(*tasks)
+    for response in responses:
+        if response and response.status == 200:
+            success_count += 1
     
     # التحقق من النتائج
     if success_count == len(jwt_tokens):
@@ -131,7 +114,7 @@ async def send_likes(request_id, request_code):
     else:
         return {"status": "error", "message": "تحقق من ID والمنطقة"}
 
-# نقطة النهاية GET
+# نقطة النهاية (GET)
 @app.route('/like', methods=['GET'])
 async def like():
     try:
@@ -149,7 +132,7 @@ async def like():
             return jsonify({"error": "'id' must be a valid integer."}), 400
         
         # إرسال اللايكات
-        result = await send_likes(request_id, request_code)
+        result = await send_likes_async(request_id, request_code)
         
         # إرجاع الاستجابة
         if result["status"] == "success":
