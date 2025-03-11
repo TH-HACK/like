@@ -6,6 +6,7 @@ import data_pb2  # ملف data_pb2.py الذي تم إنشاؤه بواسطة pr
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
+import asyncio
 
 # إعداد logging لعرض التحديثات
 logging.basicConfig(
@@ -16,7 +17,10 @@ logging.basicConfig(
     ]
 )
 
-# دالة لقراءة الحسابات من ملف acc.txt
+# إعداد Flask مع دعم Async
+app = Flask(__name__)
+
+# قراءة الحسابات من ملف acc.txt
 def read_accounts(file_path):
     with open(file_path, "r") as file:
         content = file.read()
@@ -71,9 +75,11 @@ def send_request(url, encrypted_data, jwt_token):
         return None
 
 # الدالة الرئيسية لإرسال اللايكات
-def send_likes(request_id, request_code):
+async def send_likes(request_id, request_code):
+    loop = asyncio.get_event_loop()
+    
     # قراءة الحسابات من ملف acc.txt
-    accounts = read_accounts("acc.txt")
+    accounts = await loop.run_in_executor(None, lambda: read_accounts("acc.txt"))
     logging.info(f"تم تحميل {len(accounts)} حسابًا من ملف acc.txt.")
     
     # Key and IV للتشفير
@@ -98,28 +104,24 @@ def send_likes(request_id, request_code):
     # جلب جميع JWT Tokens بشكل غير متزامن
     jwt_tokens = {}
     with ThreadPoolExecutor(max_workers=100) as executor:
-        future_to_uid = {
-            executor.submit(get_jwt_token, uid, password): uid
+        futures = {
+            loop.run_in_executor(executor, get_jwt_token, uid, password): uid
             for uid, password in accounts.items()
         }
-        
-        # معالجة النتائج
-        for future in as_completed(future_to_uid):
-            uid, jwt_token = future.result()
+        for future in as_completed(futures):
+            uid, jwt_token = await future
             if jwt_token:
                 jwt_tokens[uid] = jwt_token
     
     # إرسال 100 طلب في نفس الوقت باستخدام JWT Tokens
     success_count = 0
     with ThreadPoolExecutor(max_workers=100) as executor:
-        future_to_uid = {
-            executor.submit(send_request, url, encrypted_data, jwt_token): uid
+        futures = {
+            loop.run_in_executor(executor, send_request, url, encrypted_data, jwt_token): uid
             for uid, jwt_token in jwt_tokens.items()
         }
-        
-        # معالجة النتائج
-        for future in as_completed(future_to_uid):
-            response = future.result()
+        for future in as_completed(futures):
+            response = await future
             if response and response.status_code == 200:
                 success_count += 1
     
@@ -129,11 +131,9 @@ def send_likes(request_id, request_code):
     else:
         return {"status": "error", "message": "تحقق من ID والمنطقة"}
 
-# إعداد Flask API
-app = Flask(__name__)
-
+# نقطة النهاية GET
 @app.route('/like', methods=['GET'])
-def like():
+async def like():
     try:
         # استخراج البيانات من الطلب كمعلمات استعلام
         request_id = request.args.get("id")
@@ -149,7 +149,7 @@ def like():
             return jsonify({"error": "'id' must be a valid integer."}), 400
         
         # إرسال اللايكات
-        result = send_likes(request_id, request_code)
+        result = await send_likes(request_id, request_code)
         
         # إرجاع الاستجابة
         if result["status"] == "success":
@@ -162,4 +162,4 @@ def like():
 
 # تشغيل التطبيق
 if __name__ == "__main__":
-    app.run()  # لن يتم تحديد بورت هنا، Vercel سيحدد البورت تلقائيًا
+    app.run()  # لن يتم تحديد بورت هنا، Vercel سيحدد البورت تلقائ
